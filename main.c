@@ -39,8 +39,15 @@ Bloco* criar_bloco(Blockchain *blockchain, Transacao transacao) {
     }
     strcpy(novo_bloco->hash_anterior, ultimo->hash);
 
+    // Criar uma string com os dados do bloco para calcular o hash
+    char dados_para_hash[256];
+    snprintf(dados_para_hash, sizeof(dados_para_hash), "%d%s%s%s%ld",
+             novo_bloco->index, novo_bloco->transacao.chave, novo_bloco->transacao.candidato,
+             novo_bloco->hash_anterior, novo_bloco->timestamp);
+
     // Gerar o hash do bloco atual
-    strcpy(novo_bloco->hash, "HashDoNovoBloco"); // Substituir pela função de hash
+    calcular_hash(dados_para_hash, novo_bloco->hash);
+
     novo_bloco->proximo = NULL;
 
     // Atualizar o blockchain
