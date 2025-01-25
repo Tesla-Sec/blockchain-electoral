@@ -4,6 +4,7 @@
 #include <time.h>
 #include <openssl/sha.h>
 #include <stdbool.h>
+#include "mongoose.h"
 
 #define MAX_USUARIOS 100  // Número máximo de usuários
 
@@ -43,6 +44,8 @@ int num_usuarios = 0;
 // Lista de CPFs que já votaram
 char cpfs_votados[MAX_USUARIOS][12];
 int num_votos = 0;
+Blockchain *blockchain;
+int dificuldade = 4;
 // Não gosto da ideia de variáveis globais, mas estou sem tempo ultimamente :]
 
 void adicionar_usuario(const char *, const char *);
@@ -57,26 +60,108 @@ void calcular_hash(const char *, char *);
 bool validar_blockchain(Blockchain *);
 void minerar_bloco(Bloco *, int );
 
+evento_http(struct mg_connection *, int , void *, void *);
+void processar_votar(struct mg_http_message *, struct mg_connection *);
+void processar_blockchain(struct mg_connection *);
+void processar_validar(struct mg_connection *);
+static void evento_http(struct mg_connection *, int , void *, void *);
 
 int main() {
-    Blockchain *blockchain = inicializar_blockchain();
-    int dificuldade = 4; // Dificuldade inicial
-
-    // Adicionar usuários para teste
+    // Inicializar blockchain e registrar alguns usuários para teste
+    blockchain = inicializar_blockchain();
     adicionar_usuario("12345678901", "senha123");
     adicionar_usuario("98765432100", "minhasenha");
 
-    // Fluxo de votação
-    votar(blockchain, "12345678901", "senha123", "Candidato1", dificuldade);
-    votar(blockchain, "12345678901", "senha123", "Candidato2", dificuldade); // Tentativa de voto duplicado
-    votar(blockchain, "98765432100", "minhasenha", "Candidato2", dificuldade);
+    struct mg_mgr mgr;
+    mg_mgr_init(&mgr);
 
-    // Exibir o blockchain
-    exibir_blockchain(blockchain);
+    // Iniciar o servidor na porta 8080
+    const char *url = "http://0.0.0.0:8080";
+    printf("Servidor iniciado em %s\n", url);
+    mg_http_listen(&mgr, url, evento_http, NULL);
 
+    // Loop do servidor
+    while (true) {
+        mg_mgr_poll(&mgr, 1000);
+    }
+
+    mg_mgr_free(&mgr);
     return 0;
 }
+// Função para processar /votar
+void processar_votar(struct mg_http_message *hm, struct mg_connection *c) {
+    char cpf[12], senha[20], candidato[20];
+    mg_http_get_var(&hm->body, "cpf", cpf, sizeof(cpf));
+    mg_http_get_var(&hm->body, "senha", senha, sizeof(senha));
+    mg_http_get_var(&hm->body, "candidato", candidato, sizeof(candidato));
 
+    if (!autenticar_usuario(cpf, senha)) {
+        mg_http_reply(c, 401, "Content-Type: text/plain\r\n", "Autenticação falhou\n");
+        return;
+    }
+
+    if (verificar_cpf_votado(cpf)) {
+        mg_http_reply(c, 403, "Content-Type: text/plain\r\n", "CPF já votou\n");
+        return;
+    }
+
+    Transacao transacao;
+    strcpy(transacao.chave, cpf); // CPF como chave
+    strcpy(transacao.candidato, candidato);
+    criar_bloco(blockchain, transacao, dificuldade);
+    registrar_cpf(cpf);
+
+    mg_http_reply(c, 200, "Content-Type: text/plain\r\n", "Voto registrado com sucesso\n");
+}
+
+// Função para processar /blockchain
+void processar_blockchain(struct mg_connection *c) {
+    Bloco *atual = blockchain->inicio;
+    char resposta[1024] = "[";
+
+    while (atual != NULL) {
+        char bloco[256];
+        snprintf(bloco, sizeof(bloco),
+                 "{\"index\":%d,\"cpf\":\"%s\",\"candidato\":\"%s\",\"hash\":\"%s\"},",
+                 atual->index, atual->transacao.chave, atual->transacao.candidato, atual->hash);
+        strcat(resposta, bloco);
+        atual = atual->proximo;
+    }
+
+    // Remover a última vírgula e fechar o JSON
+    if (resposta[strlen(resposta) - 1] == ',') {
+        resposta[strlen(resposta) - 1] = '\0';
+    }
+    strcat(resposta, "]");
+
+    mg_http_reply(c, 200, "Content-Type: application/json\r\n", "%s\n", resposta);
+}
+
+// Função para processar /validar
+void processar_validar(struct mg_connection *c) {
+    if (validar_blockchain(blockchain)) {
+        mg_http_reply(c, 200, "Content-Type: text/plain\r\n", "Blockchain válido\n");
+    } else {
+        mg_http_reply(c, 400, "Content-Type: text/plain\r\n", "Blockchain inválido\n");
+    }
+}
+
+// Função principal do servidor HTTP
+static void evento_http(struct mg_connection *c, int ev, void *ev_data, void *fn_data) {
+    if (ev == MG_EV_HTTP_MSG) {
+        struct mg_http_message *hm = (struct mg_http_message *) ev_data;
+
+        if (mg_http_match_uri(hm, "/votar")) {
+            processar_votar(hm, c);
+        } else if (mg_http_match_uri(hm, "/blockchain")) {
+            processar_blockchain(c);
+        } else if (mg_http_match_uri(hm, "/validar")) {
+            processar_validar(c);
+        } else {
+            mg_http_reply(c, 404, "Content-Type: text/plain\r\n", "Endpoint não encontrado\n");
+        }
+    }
+}
 void adicionar_usuario(const char *cpf, const char *senha) {
     if (num_usuarios < MAX_USUARIOS) {
         strcpy(usuarios[num_usuarios].cpf, cpf);
